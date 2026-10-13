@@ -1,0 +1,31 @@
+# Dimensions and masses of the AGV, in metres and kilograms.
+# PROVISIONAL: every value here is a placeholder until the chassis and ring are designed and measured.
+# The simulator and the follower read the same file, so change a number here and all three agree.
+base:
+  length: 0.40
+  width: 0.30
+  height: 0.10
+  ground_clearance: 0.03
+  mass: 6.0
+wheel:
+  radius: 0.05
+  width: 0.03
+  separation: 0.32      # distance between the two drive wheels' centres
+  mass: 0.3
+caster:
+  radius: 0.02
+  x_offset: -0.16       # behind the drive axle
+pedestal:
+  height: 1.00          # base top to ring
+  radius: 0.03
+  mass: 1.5
+ring:
+  radius: 0.08          # camera's distance from the ring axis
+  height: 0.03
+  mass: 0.3
+gimbal_mount:
+  payload_mass: 0.8     # DJI Osmo + iPhone, carried as a fixed mass
+ultrasonic:
+  fov: 0.52             # rad (about 30 degrees), full cone
+  min_range: 0.02
+  max_range: 4.0

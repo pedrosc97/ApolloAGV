@@ -1,0 +1,42 @@
+name: apollo-agv
+
+services:
+  # Mac: build, test and simulate. Start it through scripts/dev.sh, which sets APOLLO_WEBOTS_SHARED.
+  dev:
+    build: { context: .., dockerfile: docker/Dockerfile, target: dev }
+    image: apollo-agv:dev
+    init: true
+    tty: true
+    stdin_open: true
+    volumes:
+      - ..:/apollo                      # whole repo; the colcon workspace is /apollo/ros2_ws
+      # Build output stays in Docker volumes: faster than a macOS folder, and keeps the repo clean.
+      - ws_build:/apollo/ros2_ws/build
+      - ws_install:/apollo/ros2_ws/install
+      - ws_log:/apollo/ros2_ws/log
+      # Folder both the container and Webots (running on the Mac) can read; worlds are handed over through it.
+      - ${APOLLO_WEBOTS_SHARED:-../.webots_shared}:/webots_shared
+    environment:
+      # "<path on the Mac>:<path in the container>". Its presence switches webots_ros2 to "Webots is on the host" mode.
+      WEBOTS_SHARED_FOLDER: ${APOLLO_WEBOTS_SHARED:-/tmp/webots_shared}:/webots_shared
+      PYTHONDONTWRITEBYTECODE: "1"   # keeps __pycache__ out of the repo folder
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8765:8765"   # Foxglove bridge: open ws://localhost:8765 in Foxglove on the Mac
+
+  # Raspberry Pi: the checkout lives at ~/ApolloAGV; colcon builds in place under ros2_ws/ (gitignored).
+  robot:
+    build: { context: .., dockerfile: docker/Dockerfile, target: robot }
+    image: apollo-agv:robot
+    init: true
+    network_mode: host
+    privileged: true          # USB (RealSense), GPIO and serial; narrow this once the hardware is fixed
+    volumes:
+      - ..:/apollo
+      - /dev:/dev
+
+volumes:
+  ws_build:
+  ws_install:
+  ws_log:

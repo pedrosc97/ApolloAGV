@@ -1,0 +1,8 @@
+{
+  // Optional: "Dev Containers: Reopen in Container" gives VS Code ROS-aware autocomplete inside the dev image.
+  "name": "ApolloAGV (ROS 2 Jazzy)",
+  "dockerComposeFile": "../docker/compose.yaml",
+  "service": "dev",
+  "workspaceFolder": "/apollo",
+  "customizations": { "vscode": { "extensions": ["ms-python.python", "redhat.vscode-xml", "redhat.vscode-yaml"] } }
+}

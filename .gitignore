@@ -1,0 +1,24 @@
+# colcon (ROS 2)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# macOS and editors
+.DS_Store
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Arduino build output
+arduino/**/build/
+*.hex
+*.elf
+*.bin

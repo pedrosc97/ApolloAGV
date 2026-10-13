@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>apollo_agv_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files and parameters for the Apollo AGV, in simulation and on the robot.</description>
+  <maintainer email="pedro.sc.97@gmail.com">Pedro Sanchez</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>apollo_agv_description</exec_depend>
+  <exec_depend>apollo_agv_follow</exec_depend>
+  <exec_depend>apollo_agv_sim</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -1,0 +1,12 @@
+# Follow controller. Meanings and units are documented in apollo_agv_follow/controller.py.
+follower:
+  ros__parameters:
+    distance: 2.5
+    deadband: 0.15
+    k_distance: 0.8
+    k_bearing: 1.5
+    v_max: 1.2
+    v_reverse_max: 0.3
+    w_max: 2.0
+    stop_range: 0.40
+    slow_range: 1.00

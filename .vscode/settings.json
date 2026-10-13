@@ -1,0 +1,5 @@
+{
+  "python.analysis.extraPaths": ["colcon/ros2_ws/src/apollo_agv_follow", "colcon/ros2_ws/src/apollo_agv_sim", "colcon/ros2_ws/src/apollo_ring", "/opt/ros/jazzy/lib/python3.12/site-packages"],
+  "files.associations": { "*.xacro": "xml", "*.urdf": "xml" },
+  "files.exclude": { "**/__pycache__": true, "**/.pytest_cache": true }
+}

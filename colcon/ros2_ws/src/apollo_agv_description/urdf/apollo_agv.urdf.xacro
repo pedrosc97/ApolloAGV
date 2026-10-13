@@ -1,0 +1,128 @@
+<?xml version="1.0"?>
+<!--
+  Apollo follow-cam AGV.
+
+  Frames (REP 105 names): base_footprint (on the floor, under the drive axle) -> base_link -> everything else.
+  x forward, y left, z up. The drive axle is at x = 0, so the robot turns about base_footprint.
+
+  Moving joints:  left_wheel_joint, right_wheel_joint, ring_joint (camera ring, about z).
+  The DJI gimbal and phone are a fixed mass on gimbal_mount: they are deliberately outside the navigation stack.
+-->
+<robot name="apollo_agv" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="geometry_file" default="$(find apollo_agv_description)/config/geometry.yaml"/>
+  <xacro:property name="g" value="${xacro.load_yaml('$(arg geometry_file)')}"/>
+
+  <xacro:property name="base_z" value="${g['base']['ground_clearance'] + g['base']['height'] / 2}"/>
+  <xacro:property name="ring_z" value="${g['base']['height'] / 2 + g['pedestal']['height']}"/>
+
+  <material name="grey"><color rgba="0.55 0.55 0.58 1"/></material>
+  <material name="dark"><color rgba="0.12 0.12 0.14 1"/></material>
+  <material name="accent"><color rgba="0.95 0.55 0.10 1"/></material>
+
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (y*y + z*z) / 12}" iyy="${mass * (x*x + z*z) / 12}" izz="${mass * (x*x + y*y) / 12}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+  <xacro:macro name="cylinder_inertial" params="mass r h">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (3*r*r + h*h) / 12}" iyy="${mass * (3*r*r + h*h) / 12}" izz="${mass * r*r / 2}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <link name="base_footprint"/>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${base_z}"/>
+  </joint>
+
+  <link name="base_link">
+    <visual><geometry><box size="${g['base']['length']} ${g['base']['width']} ${g['base']['height']}"/></geometry><material name="grey"/></visual>
+    <collision><geometry><box size="${g['base']['length']} ${g['base']['width']} ${g['base']['height']}"/></geometry></collision>
+    <xacro:box_inertial mass="${g['base']['mass']}" x="${g['base']['length']}" y="${g['base']['width']}" z="${g['base']['height']}"/>
+  </link>
+
+  <!-- Drive wheels. side = +1 for left, -1 for right. -->
+  <xacro:macro name="wheel" params="name side">
+    <link name="${name}_wheel_link">
+      <visual><origin rpy="${pi/2} 0 0"/><geometry><cylinder radius="${g['wheel']['radius']}" length="${g['wheel']['width']}"/></geometry><material name="dark"/></visual>
+      <collision><origin rpy="${pi/2} 0 0"/><geometry><cylinder radius="${g['wheel']['radius']}" length="${g['wheel']['width']}"/></geometry></collision>
+      <xacro:cylinder_inertial mass="${g['wheel']['mass']}" r="${g['wheel']['radius']}" h="${g['wheel']['width']}"/>
+    </link>
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="base_link"/><child link="${name}_wheel_link"/>
+      <origin xyz="0 ${side * g['wheel']['separation'] / 2} ${g['wheel']['radius'] - base_z}"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:wheel name="left" side="1"/>
+  <xacro:wheel name="right" side="-1"/>
+
+  <link name="caster_link">
+    <visual><geometry><sphere radius="${g['caster']['radius']}"/></geometry><material name="dark"/></visual>
+    <collision><geometry><sphere radius="${g['caster']['radius']}"/></geometry></collision>
+    <inertial><mass value="0.05"/><inertia ixx="1e-5" iyy="1e-5" izz="1e-5" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/><child link="caster_link"/>
+    <origin xyz="${g['caster']['x_offset']} 0 ${g['caster']['radius'] - base_z}"/>
+  </joint>
+
+  <!-- Pedestal: fixed column on the base. -->
+  <link name="pedestal_link">
+    <visual><geometry><cylinder radius="${g['pedestal']['radius']}" length="${g['pedestal']['height']}"/></geometry><material name="grey"/></visual>
+    <collision><geometry><cylinder radius="${g['pedestal']['radius']}" length="${g['pedestal']['height']}"/></geometry></collision>
+    <xacro:cylinder_inertial mass="${g['pedestal']['mass']}" r="${g['pedestal']['radius']}" h="${g['pedestal']['height']}"/>
+  </link>
+  <joint name="pedestal_joint" type="fixed">
+    <parent link="base_link"/><child link="pedestal_link"/>
+    <origin xyz="0 0 ${g['base']['height'] / 2 + g['pedestal']['height'] / 2}"/>
+  </joint>
+
+  <!-- Rotating ring carrying the RealSense. Zero angle = camera facing the robot's forward direction. -->
+  <link name="ring_link">
+    <visual><geometry><cylinder radius="${g['ring']['radius']}" length="${g['ring']['height']}"/></geometry><material name="accent"/></visual>
+    <xacro:cylinder_inertial mass="${g['ring']['mass']}" r="${g['ring']['radius']}" h="${g['ring']['height']}"/>
+  </link>
+  <joint name="ring_joint" type="continuous">
+    <parent link="base_link"/><child link="ring_link"/>
+    <origin xyz="0 0 ${ring_z}"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- RealSense body frame (x forward, out of the lens side), on the rim of the ring. -->
+  <link name="camera_link">
+    <visual><geometry><box size="0.025 0.09 0.025"/></geometry><material name="dark"/></visual>
+    <inertial><mass value="0.08"/><inertia ixx="1e-4" iyy="1e-5" izz="1e-4" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="ring_link"/><child link="camera_link"/>
+    <origin xyz="${g['ring']['radius']} 0 0"/>
+  </joint>
+
+  <!-- Static centre of the ring: where the DJI gimbal bolts on. Does not turn with the ring. -->
+  <link name="gimbal_mount">
+    <inertial><origin xyz="0 0 0.12"/><mass value="${g['gimbal_mount']['payload_mass']}"/><inertia ixx="4e-3" iyy="4e-3" izz="1e-3" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="gimbal_mount_joint" type="fixed">
+    <parent link="base_link"/><child link="gimbal_mount"/>
+    <origin xyz="0 0 ${ring_z + g['ring']['height'] / 2}"/>
+  </joint>
+
+  <!-- Ultrasonic sensors: one per side of the base, x axis pointing along the beam. -->
+  <xacro:macro name="ultrasonic" params="name x y yaw">
+    <link name="ultrasonic_${name}_link">
+      <visual><geometry><box size="0.015 0.045 0.02"/></geometry><material name="accent"/></visual>
+    </link>
+    <joint name="ultrasonic_${name}_joint" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_${name}_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 ${yaw}"/>
+    </joint>
+  </xacro:macro>
+  <xacro:ultrasonic name="front" x="${g['base']['length'] / 2}"  y="0" yaw="0"/>
+  <xacro:ultrasonic name="rear"  x="${-g['base']['length'] / 2}" y="0" yaw="${pi}"/>
+  <xacro:ultrasonic name="left"  x="0" y="${g['base']['width'] / 2}"  yaw="${pi/2}"/>
+  <xacro:ultrasonic name="right" x="0" y="${-g['base']['width'] / 2}" yaw="${-pi/2}"/>
+</robot>

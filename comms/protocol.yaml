@@ -1,0 +1,74 @@
+# Apollo ring stepper: Pi <-> Arduino serial protocol. Single source of truth.
+#
+# Edit this file, then regenerate both sides:
+#     python3 comms/gen_protocol.py            (or: bash scripts/dev.sh gen)
+# which writes
+#     arduino/ring_stepper/ring_protocol.h                         (C++, Arduino)
+#     colcon/ros2_ws/src/apollo_ring/apollo_ring/ring_protocol.py  (Python, ROS 2 side)
+# Never hand-edit the generated files. Commit them together with this file;
+# neither build runs the generator. `python3 comms/gen_protocol.py --check`
+# fails if they are out of date.
+#
+# Frame on the wire:
+#     0xAA 0x55 | type | len | payload[len] | crc8
+# CRC-8/MAXIM (poly 0x31 reflected = 0x8C, init 0) over type, len and payload.
+# Values are little-endian; f32 is IEEE-754 float32. This is the same framing
+# style the DDSM115 drive motors use.
+#
+# Field types: u8 i8 u16 i16 u32 i32 f32
+
+constants:
+  SYNC0: 0xAA
+  SYNC1: 0x55
+  MAX_PAYLOAD: 16
+  # Link timing, shared so the firmware and the host agree.
+  SERIAL_BAUD: 115200      # USB serial, Pi <-> Arduino
+  WATCHDOG_MS: 250         # firmware ramps the ring to 0 if no CMD_VEL for this long
+  STATUS_PERIOD_MS: 20     # firmware sends STATUS at 50 Hz
+
+enums:
+  State:
+    values:
+      UNHOMED: 0
+      HOMING: 1
+      READY: 2
+      FAULT: 3
+  Flags:
+    bitfield: true
+    prefix: F_             # C++ names get this prefix (F_HOME_SW); Python uses Flags.HOME_SW
+    values:
+      HOME_SW: 0x01        # home switch active (ring on the negative half)
+      WATCHDOG: 0x02       # velocity commands stopped arriving
+      LIMIT_NEG: 0x04      # command held back by the negative soft limit
+      LIMIT_POS: 0x08      # command held back by the positive soft limit
+      STEP_LOSS: 0x10      # centre crossing disagreed with the step count; re-home
+      ENABLED: 0x20        # driver energised
+
+messages:
+  CMD_VEL:
+    type: 0x01
+    dir: to_mcu
+    doc: Ring velocity command, rad/s. Doubles as the heartbeat; send at 20 Hz or faster.
+    fields:
+      - {name: velocity, type: f32}
+  CMD_HOME:
+    type: 0x02
+    dir: to_mcu
+    doc: Enable the driver and run the homing routine. No payload.
+    fields: []
+  CMD_ENABLE:
+    type: 0x03
+    dir: to_mcu
+    doc: Energise (1) or release (0) the motor. Releasing loses the homed position.
+    fields:
+      - {name: enabled, type: u8}   # not "on": YAML reads that as true
+  STATUS:
+    type: 0x81
+    dir: to_host
+    doc: Ring state every STATUS_PERIOD_MS. angle 0 = home, positive = counter-clockwise from above.
+    fields:
+      - {name: angle, type: f32}                # rad
+      - {name: velocity, type: f32}             # rad/s, the ramped velocity being output
+      - {name: state, type: u8, enum: State}
+      - {name: flags, type: u8, enum: Flags}
+      - {name: cross_error, type: f32}          # rad, step-count error at the last centre crossing
