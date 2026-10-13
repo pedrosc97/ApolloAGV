@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from apollo_agv_sim.model import Agv, Limits, Sonar, Subject, World, wrap
+from apollo_agv_sim.model import Agv, Camera, Limits, Sonar, Subject, World, wrap
 
 DT = 0.01
 
@@ -72,3 +72,59 @@ def test_world_frames_agree():
     world.agv.ring = 0.3
     assert world.ring_pointing_error() == pytest.approx(-0.3)
     assert wrap(3 * math.pi) == pytest.approx(math.pi)
+
+
+def test_subject_pauses_at_dwell_waypoints():
+    subject = Subject(waypoints=[(0, 0), (1, 0), (2, 0)], speed=1.0, dwell={1: 2.0})
+    for _ in range(200):                                       # 1 s to reach (1, 0), then 1 s of a 2 s pause
+        subject.step(DT)
+    assert (subject.x, subject.y) == pytest.approx((1.0, 0.0), abs=1e-6)
+    assert (subject.vx, subject.vy) == pytest.approx((0.0, 0.0))
+    for _ in range(150):                                       # 1 s more pause, then 0.5 s of walking
+        subject.step(DT)
+    assert subject.x == pytest.approx(1.5, abs=1e-6)
+
+
+def test_camera_sees_only_inside_its_view_from_the_ring():
+    world = World(subject=Subject(waypoints=[(0.0, 3.0), (0.0, 3.0001)], speed=0.0),
+                  camera=Camera(fov=math.radians(60)))
+    assert world.detections() == []                            # subject on the left, ring facing forward
+    world.agv.ring = math.pi / 2
+    [(t, x, y)] = world.detections()
+    assert (t, x, y) == (0.0, 0.0, 3.0)
+    world.camera.max_range = 2.0
+    assert world.detections() == []                            # in view but too far
+
+
+def test_camera_rate_and_latency():
+    world = World(camera=Camera(rate=10.0, latency=0.25))
+    got = []
+    for _ in range(100):                                       # 1 s
+        got += world.detections()
+        world.step(DT, 0.0, 0.0, 0.0)
+    captures = [t for t, _, _ in got]
+    assert len(captures) == 8                                  # frames at 0.0..0.7 s released by 0.95..
+    assert captures[1] - captures[0] == pytest.approx(0.1, abs=DT)
+
+
+def test_camera_noise_and_dropout_are_repeatable():
+    def frames(seed):
+        world = World(camera=Camera(noise=0.05, dropout=0.3, seed=seed))
+        out = []
+        for _ in range(200):
+            out.append(world.detections())
+            world.step(DT, 0.0, 0.0, 0.0)
+        return out
+    a = frames(1)
+    assert a == frames(1) and a != frames(2)
+    assert 0.5 < sum(1 for f in a if f) / len(a) < 0.9
+
+
+def test_imu_reports_turn_rate_and_acceleration():
+    agv = Agv()
+    agv.step(DT, 1.0, 0.5, 0.0)
+    world = World(agv=agv)
+    yaw_rate, ax, ay = world.imu()
+    assert yaw_rate == pytest.approx(agv.w)
+    assert ax == pytest.approx(agv.limits.a_max)
+    assert ay == pytest.approx(agv.v * agv.w)

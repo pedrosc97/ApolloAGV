@@ -1,12 +1,28 @@
-# Follow controller. Meanings and units are documented in apollo_agv_follow/controller.py.
+# Follower node: runs one guidance algorithm. Meanings and units are in apollo_agv_follow/guidance/.
+# <algorithm>.<param> values can also be changed while it runs:  ros2 param set /follower apollo.k_ring 0.2
 follower:
   ros__parameters:
-    distance: 2.5
-    deadband: 0.15
-    k_distance: 0.8
-    k_bearing: 1.5
-    v_max: 1.2
-    v_reverse_max: 0.3
-    w_max: 2.0
-    stop_range: 0.40
-    slow_range: 1.00
+    algorithm: apollo          # apollo (the one being designed) or baseline (the original proportional law)
+    rate: 30.0                 # Hz
+    goal_distance: 2.5         # m to hold from the subject (every algorithm reads this, not its own copy)
+    goal_angle: 3.14159        # rad, where to sit relative to the subject's heading; pi = behind
+    odom_timeout: 0.5          # s without odometry -> stop
+    safety_v_max: 1.5          # m/s, hard clamp on any algorithm's output
+    safety_w_max: 2.5          # rad/s
+    tracker:                   # subject tracker (apollo_agv_follow/tracking.py)
+      alpha: 0.85
+      beta: 0.3
+      max_gap: 1.0
+      max_predict: 0.5
+    apollo:
+      subject_timeout: 0.5
+      k_ring: 0.0
+    baseline:
+      deadband: 0.15
+      k_distance: 0.8
+      k_bearing: 1.5
+      v_max: 1.2
+      v_reverse_max: 0.3
+      w_max: 2.0
+      stop_range: 0.40
+      slow_range: 1.00

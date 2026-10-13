@@ -4,13 +4,14 @@
 #   bash scripts/dev.sh image          build (or refresh) the dev image; first time takes several minutes
 #   bash scripts/dev.sh build          colcon build
 #   bash scripts/dev.sh test           colcon test, with results
-#   bash scripts/dev.sh sim            whole stack against the 2D simulator; view at ws://localhost:8765 in Foxglove
+#   bash scripts/dev.sh sim [args]     whole stack against the 2D simulator, e.g. sim algorithm:=baseline scenario:=noisy;
+#                                      view at ws://localhost:8765 in Foxglove
 #   bash scripts/dev.sh shell          a shell in the container (ROS and the workspace already sourced)
 #   bash scripts/dev.sh run -- <cmd>   run one command in the container, e.g. run -- ros2 topic list
 #
 #   bash scripts/dev.sh test-native    the pure-Python tests straight on the Mac (no Docker, no ROS), firmware protocol included
 #   bash scripts/dev.sh gen            regenerate ring_protocol.h / .py / .js from comms/protocol.yaml
-#   bash scripts/dev.sh run2d [args]   closed-loop 2D run straight on the Mac, e.g. run2d --plot follow.png
+#   bash scripts/dev.sh run2d [args]   closed-loop 2D run on the Mac, e.g. run2d --scenario all, run2d --algorithm all --plot run.png
 #   bash scripts/dev.sh ring-ui        ring console in Chrome (Web Serial to the Arduino, or a simulated ring)
 #
 #   bash scripts/dev.sh webots-server  on the Mac, leave running: lets the container start Webots.app
@@ -86,5 +87,5 @@ case "$CMD" in
     echo "== Expect Webots to open on the Mac with a TurtleBot3 in an apartment. Ctrl-C to stop."
     in_container bash -c 'ros2 launch webots_ros2_turtlebot robot_launch.py' ;;
   *)
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

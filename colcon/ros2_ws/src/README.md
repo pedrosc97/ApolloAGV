@@ -39,9 +39,9 @@ generated files together. `test-native` fails if the generated files are out of 
 
 | Package | What it is | State |
 | --- | --- | --- |
-| `apollo_agv_description` | URDF of the AGV. All dimensions come from `config/geometry.yaml`. | Working, tested. Dimensions are placeholders. |
-| `apollo_agv_follow` | Follow controller: holds a distance, points the ring at the subject. | Simple baseline, tested. To be replaced by the real design. |
-| `apollo_agv_sim` | 2D simulator that stands in for motors, ring, ultrasonics and perception. | Working, tested |
+| `apollo_agv_description` | URDFs: `apollo_agv` (full) and `mock_apollo` (basic stand-in used in simulation). All dimensions come from `config/geometry.yaml`. | Working, tested. Dimensions are placeholders. |
+| `apollo_agv_follow` | Follow guidance: a fixed input/output contract, pluggable algorithms, subject tracker, ROS node. | Plumbing done and tested. `apollo` algorithm is a stub to design; `baseline` is the old proportional law. |
+| `apollo_agv_sim` | 2D simulator that stands in for motors, ring, IMU, ultrasonics and perception (camera FOV, rate, latency, noise, dropouts), with named scenarios. | Working, tested |
 | `apollo_agv_bringup` | Launch files and parameters. | `sim2d` works; `robot` has no hardware drivers yet |
 | `apollo_ring` | Pi side of the ring stepper link. | Protocol generated and tested; bridge node not in yet |
 
@@ -59,7 +59,8 @@ bash scripts/dev.sh test-native            # unit tests + closed-loop tests
 bash scripts/dev.sh run2d --plot follow.png  # one closed-loop run, with numbers and a picture
 ```
 
-Use this for tuning: change a gain in `colcon/ros2_ws/src/apollo_agv_follow/apollo_agv_follow/controller.py`, rerun, read the numbers.
+Use this for designing guidance: edit `apollo_agv_follow/guidance/apollo.py`, rerun, read the numbers. See
+[Developing guidance](#developing-guidance) below.
 
 **2. ROS 2 in Docker, 2D simulator.** The real nodes, topics and TF, with the simulator in place of hardware.
 
@@ -67,9 +68,13 @@ Use this for tuning: change a gain in `colcon/ros2_ws/src/apollo_agv_follow/apol
 bash scripts/dev.sh image    # once, and after changing colcon/docker/Dockerfile
 bash scripts/dev.sh test     # colcon build + colcon test
 bash scripts/dev.sh sim      # then in Foxglove on the Mac: Open connection -> ws://localhost:8765
+bash scripts/dev.sh sim algorithm:=baseline scenario:=noisy camera:=realistic model:=apollo_agv
 ```
 
-In Foxglove add a 3D panel (fixed frame `odom`) to see the robot model, the ring turning and the subject.
+In Foxglove add a 3D panel (fixed frame `odom`) to see the robot model (`mock_apollo` by default), the ring
+turning, the subject, its tracked estimate (`subject/estimate`) and any obstacles. A Plot panel on
+`/guidance/debug/*` shows whatever the algorithm reports. Gains can be changed live:
+`ros2 param set /follower apollo.k_ring 0.2`.
 `bash scripts/dev.sh shell` gives a shell in the container for `ros2 topic echo` and the like.
 
 **3. ROS 2 in Docker, Webots on the Mac.** 3D physics and rendered sensors. Webots runs natively on the Mac;
@@ -82,6 +87,37 @@ bash scripts/dev.sh webots-check    # terminal 2: stock TurtleBot demo, proves t
 
 There is no Apollo world for Webots yet; that comes once the ring's mechanical design is settled.
 
+## Developing guidance
+
+The algorithm sits behind one contract (`apollo_agv_follow/guidance/interface.py`), so the same code runs in
+`run2d`, in `sim2d` and on the robot:
+
+```
+ topics / 2D model ──► GuidanceInput ──► algorithm.step() ──► GuidanceOutput ──► safety clamp ──► cmd_vel, ring/command
+                        t, dt                                  v, w, ring
+                        robot     (odom: pose, v, w)           debug {name: value}
+                        ring      (joint_states: angle, rate)
+                        subject   (SubjectTracker: position, velocity, age)
+                        ranges    (4 ultrasonics)
+                        imu       (yaw rate, accelerations)
+                        goal      (distance, angle around the subject)
+```
+
+- Write the algorithm in `guidance/apollo.py` (`ApolloGuidance.step`). Tunables go in `ApolloParams`; each becomes
+  a ROS parameter `apollo.<name>` (`apollo_agv_bringup/config/follow.yaml`) and a `run2d --set name=value` override.
+- Anything put in the output's `debug` dict is plotted by `run2d --plot` and published on `guidance/debug/<name>`.
+- To try a second design, add another `Guidance` subclass and list it in `guidance/__init__.py`.
+- Scenarios live in `apollo_agv_sim/scenarios.py`: `loop`, `straight`, `stop_and_go`, `towards`, `obstacles`,
+  `noisy` (realistic camera: 69° view on the ring, 30 Hz, 100 ms late, noisy, dropped frames).
+
+```bash
+bash scripts/dev.sh run2d                                        # apollo on the default walk
+bash scripts/dev.sh run2d --scenario all                         # every scenario, one table
+bash scripts/dev.sh run2d --algorithm all --scenario noisy --plot run.png   # against the baseline, with a picture
+bash scripts/dev.sh run2d --set k_ring=0.2 --distance 3          # parameters without editing code
+bash scripts/dev.sh test-native                                  # includes a smoke run of every algorithm x scenario
+```
+
 ## Topics
 
 | Topic | Type | From | Meaning |
@@ -91,7 +127,11 @@ There is no Apollo world for Webots yet; that comes once the ring's mechanical d
 | `odom` (+ TF `odom -> base_footprint`) | `nav_msgs/Odometry` | simulator / base driver | robot pose |
 | `joint_states` | `sensor_msgs/JointState` | simulator / drivers | `left_wheel_joint`, `right_wheel_joint`, `ring_joint` |
 | `ultrasonic/{front,rear,left,right}` | `sensor_msgs/Range` | simulator / driver | obstacle ranges |
-| `subject/pose` | `geometry_msgs/PoseStamped` | simulator / perception | subject position in `odom` |
+| `imu/data` | `sensor_msgs/Imu` | simulator / IMU driver | yaw rate and accelerations, frame `imu_link` |
+| `subject/pose` | `geometry_msgs/PoseStamped` | simulator / perception | subject position in `odom`, only when seen; stamp = capture time |
+| `subject/estimate` | `geometry_msgs/PoseStamped` | follower | tracker output: position, heading of travel |
+| `guidance/debug/<name>` | `std_msgs/Float64` | follower | whatever the algorithm reports |
+| `subject/ground_truth` | `geometry_msgs/PoseStamped` | simulator only | true subject position, for comparison; nothing on the robot reads it |
 
 The follower only knows these topics, so it runs unchanged against the 2D simulator, Webots or the robot.
 

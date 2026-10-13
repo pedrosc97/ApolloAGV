@@ -1,0 +1,138 @@
+<?xml version="1.0"?>
+<!--
+  mock_apollo: a deliberately basic stand-in for the Apollo AGV, for simulation and for developing guidance.
+
+  Plain shapes, one file, dimensions from config/geometry.yaml (the same numbers the 2D simulator uses).
+  It keeps every frame and joint name the stack relies on, so anything that runs against it runs against
+  apollo_agv.urdf.xacro too (test/test_description.py checks both against the same contract).
+
+  Frames: base_footprint (on the floor, under the drive axle) -> base_link -> everything else. x forward, y left, z up.
+  Moving joints: left_wheel_joint, right_wheel_joint, ring_joint (camera ring, about z).
+  Sensors: camera_link (on the ring, x = viewing direction), imu_link, ultrasonic_{front,rear,left,right}_link.
+-->
+<robot name="mock_apollo" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="geometry_file" default="$(find apollo_agv_description)/config/geometry.yaml"/>
+  <xacro:property name="g" value="${xacro.load_yaml('$(arg geometry_file)')}"/>
+
+  <xacro:property name="base" value="${g['base']}"/>
+  <xacro:property name="wheel" value="${g['wheel']}"/>
+  <xacro:property name="base_z" value="${base['ground_clearance'] + base['height'] / 2}"/>
+  <xacro:property name="ring_z" value="${base['height'] / 2 + g['pedestal']['height']}"/>
+
+  <material name="body"><color rgba="0.30 0.45 0.65 1"/></material>
+  <material name="tyre"><color rgba="0.10 0.10 0.10 1"/></material>
+  <material name="ring"><color rgba="0.95 0.55 0.10 1"/></material>
+  <material name="sensor"><color rgba="0.90 0.90 0.90 1"/></material>
+
+  <!-- Simple solid-body inertia, so the model also loads in a physics simulator later. -->
+  <xacro:macro name="box_inertia" params="m x y z">
+    <inertial><mass value="${m}"/>
+      <inertia ixx="${m*(y*y+z*z)/12}" iyy="${m*(x*x+z*z)/12}" izz="${m*(x*x+y*y)/12}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+  <xacro:macro name="cylinder_inertia" params="m r h">
+    <inertial><mass value="${m}"/>
+      <inertia ixx="${m*(3*r*r+h*h)/12}" iyy="${m*(3*r*r+h*h)/12}" izz="${m*r*r/2}" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Base -->
+  <link name="base_footprint"/>
+  <link name="base_link">
+    <visual><geometry><box size="${base['length']} ${base['width']} ${base['height']}"/></geometry><material name="body"/></visual>
+    <collision><geometry><box size="${base['length']} ${base['width']} ${base['height']}"/></geometry></collision>
+    <xacro:box_inertia m="${base['mass']}" x="${base['length']}" y="${base['width']}" z="${base['height']}"/>
+  </link>
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${base_z}"/>
+  </joint>
+
+  <!-- Drive wheels on the axle under base_footprint; side = +1 left, -1 right. -->
+  <xacro:macro name="wheel" params="name side">
+    <link name="${name}_wheel_link">
+      <visual><origin rpy="${pi/2} 0 0"/><geometry><cylinder radius="${wheel['radius']}" length="${wheel['width']}"/></geometry><material name="tyre"/></visual>
+      <collision><origin rpy="${pi/2} 0 0"/><geometry><cylinder radius="${wheel['radius']}" length="${wheel['width']}"/></geometry></collision>
+      <xacro:cylinder_inertia m="${wheel['mass']}" r="${wheel['radius']}" h="${wheel['width']}"/>
+    </link>
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="base_link"/><child link="${name}_wheel_link"/>
+      <origin xyz="0 ${side * wheel['separation'] / 2} ${wheel['radius'] - base_z}"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+  </xacro:macro>
+  <xacro:wheel name="left" side="1"/>
+  <xacro:wheel name="right" side="-1"/>
+
+  <link name="caster_link">
+    <visual><geometry><sphere radius="${g['caster']['radius']}"/></geometry><material name="tyre"/></visual>
+    <collision><geometry><sphere radius="${g['caster']['radius']}"/></geometry></collision>
+    <inertial><mass value="0.05"/><inertia ixx="1e-5" iyy="1e-5" izz="1e-5" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/><child link="caster_link"/>
+    <origin xyz="${g['caster']['x_offset']} 0 ${g['caster']['radius'] - base_z}"/>
+  </joint>
+
+  <!-- Pedestal (mast) up to the ring -->
+  <link name="pedestal_link">
+    <visual><geometry><cylinder radius="${g['pedestal']['radius']}" length="${g['pedestal']['height']}"/></geometry><material name="body"/></visual>
+    <xacro:cylinder_inertia m="${g['pedestal']['mass']}" r="${g['pedestal']['radius']}" h="${g['pedestal']['height']}"/>
+  </link>
+  <joint name="pedestal_joint" type="fixed">
+    <parent link="base_link"/><child link="pedestal_link"/>
+    <origin xyz="0 0 ${base['height'] / 2 + g['pedestal']['height'] / 2}"/>
+  </joint>
+
+  <!-- Camera ring. Zero angle = camera facing the robot's forward direction. -->
+  <link name="ring_link">
+    <visual><geometry><cylinder radius="${g['ring']['radius']}" length="${g['ring']['height']}"/></geometry><material name="ring"/></visual>
+    <xacro:cylinder_inertia m="${g['ring']['mass']}" r="${g['ring']['radius']}" h="${g['ring']['height']}"/>
+  </link>
+  <joint name="ring_joint" type="continuous">
+    <parent link="base_link"/><child link="ring_link"/>
+    <origin xyz="0 0 ${ring_z}"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- RealSense stand-in on the rim. The long thin box points where the camera looks, so the ring angle reads at a glance. -->
+  <link name="camera_link">
+    <visual><geometry><box size="0.03 0.09 0.03"/></geometry><material name="sensor"/></visual>
+    <visual><origin xyz="0.10 0 0"/><geometry><box size="0.20 0.01 0.01"/></geometry><material name="ring"/></visual>
+    <inertial><mass value="0.08"/><inertia ixx="1e-4" iyy="1e-5" izz="1e-4" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="ring_link"/><child link="camera_link"/>
+    <origin xyz="${g['ring']['radius']} 0 0"/>
+  </joint>
+
+  <!-- Static centre of the ring where the gimbal bolts on; carried as a fixed mass. -->
+  <link name="gimbal_mount">
+    <inertial><origin xyz="0 0 0.12"/><mass value="${g['gimbal_mount']['payload_mass']}"/><inertia ixx="4e-3" iyy="4e-3" izz="1e-3" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="gimbal_mount_joint" type="fixed">
+    <parent link="base_link"/><child link="gimbal_mount"/>
+    <origin xyz="0 0 ${ring_z + g['ring']['height'] / 2}"/>
+  </joint>
+
+  <!-- IMU at the centre of the base, axes aligned with base_link. -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/><child link="imu_link"/>
+  </joint>
+
+  <!-- Ultrasonics: one per side of the base, x along the beam. -->
+  <xacro:macro name="ultrasonic" params="name x y yaw">
+    <link name="ultrasonic_${name}_link">
+      <visual><geometry><box size="0.015 0.045 0.02"/></geometry><material name="sensor"/></visual>
+    </link>
+    <joint name="ultrasonic_${name}_joint" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_${name}_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 ${yaw}"/>
+    </joint>
+  </xacro:macro>
+  <xacro:ultrasonic name="front" x="${base['length'] / 2}"  y="0" yaw="0"/>
+  <xacro:ultrasonic name="rear"  x="${-base['length'] / 2}" y="0" yaw="${pi}"/>
+  <xacro:ultrasonic name="left"  x="0" y="${base['width'] / 2}"  yaw="${pi/2}"/>
+  <xacro:ultrasonic name="right" x="0" y="${-base['width'] / 2}" yaw="${-pi/2}"/>
+</robot>

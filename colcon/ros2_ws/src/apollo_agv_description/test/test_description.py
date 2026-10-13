@@ -1,4 +1,6 @@
-"""The model must expand and keep the frame and joint names the rest of the stack relies on."""
+"""The models must expand and keep the frame and joint names the rest of the stack relies on.
+
+Every test runs against both the full model and mock_apollo, so either can stand in for the other."""
 import math
 import os
 import xml.etree.ElementTree as ET
@@ -12,9 +14,13 @@ PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEOMETRY = os.path.join(PKG, 'config', 'geometry.yaml')
 
 
-@pytest.fixture(scope='module')
-def robot():
-    doc = xacro.process_file(os.path.join(PKG, 'urdf', 'apollo_agv.urdf.xacro'), mappings={'geometry_file': GEOMETRY})
+MODELS = ['apollo_agv', 'mock_apollo']
+
+
+@pytest.fixture(scope='module', params=MODELS)
+def robot(request):
+    path = os.path.join(PKG, 'urdf', f'{request.param}.urdf.xacro')
+    doc = xacro.process_file(path, mappings={'geometry_file': GEOMETRY})
     return ET.fromstring(doc.toxml())
 
 
@@ -68,3 +74,10 @@ def test_ultrasonics_face_outwards(robot):
     assert abs(yaw['rear']) == pytest.approx(math.pi)
     assert yaw['left'] == pytest.approx(math.pi / 2)
     assert yaw['right'] == pytest.approx(-math.pi / 2)
+
+
+def test_mock_apollo_has_an_imu_frame():
+    doc = xacro.process_file(os.path.join(PKG, 'urdf', 'mock_apollo.urdf.xacro'), mappings={'geometry_file': GEOMETRY})
+    robot = ET.fromstring(doc.toxml())
+    assert robot.get('name') == 'mock_apollo'
+    assert joints(robot)['imu_joint'].find('parent').get('link') == 'base_link'

@@ -1,7 +1,11 @@
 """Whole stack against the 2D simulator: model + simulator + follower (+ Foxglove bridge).
 
     ros2 launch apollo_agv_bringup sim2d.launch.py                 # then open ws://localhost:8765 in Foxglove
+    ros2 launch apollo_agv_bringup sim2d.launch.py algorithm:=baseline scenario:=noisy
     ros2 launch apollo_agv_bringup sim2d.launch.py foxglove:=false follow:=false   # simulator only, drive it yourself
+
+Arguments: algorithm (apollo | baseline), scenario (see apollo_agv_sim/scenarios.py), camera (scenario | perfect |
+realistic), model (mock_apollo | apollo_agv), follow, foxglove.
 """
 import os
 
@@ -29,11 +33,18 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('follow', default_value='true', description='start the follow controller'),
         DeclareLaunchArgument('foxglove', default_value='true', description='start the Foxglove bridge on port 8765'),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(description, 'launch', 'description.launch.py'))),
+        DeclareLaunchArgument('algorithm', default_value='apollo', description='guidance algorithm: apollo or baseline'),
+        DeclareLaunchArgument('scenario', default_value='loop', description='see apollo_agv_sim/scenarios.py'),
+        DeclareLaunchArgument('camera', default_value='scenario', description='scenario, perfect or realistic'),
+        DeclareLaunchArgument('model', default_value='mock_apollo', description='URDF: mock_apollo or apollo_agv'),
+        IncludeLaunchDescription(PythonLaunchDescriptionSource(os.path.join(description, 'launch', 'description.launch.py')),
+                                 launch_arguments={'model': LaunchConfiguration('model')}.items()),
         Node(package='apollo_agv_sim', executable='sim2d', output='screen',
-             parameters=[os.path.join(bringup, 'config', 'sim2d.yaml'), geometry]),
+             parameters=[os.path.join(bringup, 'config', 'sim2d.yaml'), geometry,
+                         {'scenario': LaunchConfiguration('scenario'), 'camera': LaunchConfiguration('camera')}]),
         Node(package='apollo_agv_follow', executable='follower', output='screen',
-             parameters=[os.path.join(bringup, 'config', 'follow.yaml')],
+             parameters=[os.path.join(bringup, 'config', 'follow.yaml'),
+                         {'algorithm': LaunchConfiguration('algorithm')}],
              condition=IfCondition(LaunchConfiguration('follow'))),
         Node(package='foxglove_bridge', executable='foxglove_bridge', output='log',
              parameters=[{'port': 8765, 'address': '0.0.0.0'}],

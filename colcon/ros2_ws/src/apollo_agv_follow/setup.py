@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='Pedro Sanchez',
     maintainer_email='pedro.sc.97@gmail.com',
-    description='Follow controller for the Apollo AGV.',
+    description='Follow guidance for the Apollo AGV.',
     license='Proprietary',
     tests_require=['pytest'],
     entry_points={'console_scripts': ['follower = apollo_agv_follow.node:main']},

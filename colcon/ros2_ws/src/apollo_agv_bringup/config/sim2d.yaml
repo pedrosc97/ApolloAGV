@@ -1,5 +1,6 @@
 # 2D simulator. Robot dimensions are not here: the launch file takes them from
 # apollo_agv_description/config/geometry.yaml so the model and the simulator cannot disagree.
+# scenario and camera are usually chosen on the command line: sim2d.launch.py scenario:=noisy camera:=realistic
 sim2d:
   ros__parameters:
     rate: 50.0
@@ -9,4 +10,4 @@ sim2d:
     alpha_max: 4.0
     ring_vel_max: 3.0      # PROVISIONAL until the ring drive is measured
     ring_acc_max: 12.0     # PROVISIONAL
-    subject_speed: 1.2
+    subject_speed: -1.0    # m/s; negative = the scenario's own pace

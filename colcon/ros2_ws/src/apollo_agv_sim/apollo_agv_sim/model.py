@@ -7,10 +7,16 @@ What is modelled, and how roughly:
             No wheel slip, no motor dynamics.
     ring    one angle relative to the base, chasing a target angle with limited speed and acceleration.
             That is how a stepper behaves as long as it does not lose steps.
-    subject a point walking a closed loop of waypoints at constant speed.
+    subject a point walking a closed loop of waypoints at constant speed, optionally pausing at some of them.
     sonar   four cones on the base; each reports the nearest disc inside its cone.
+    camera  the RealSense on the ring plus the person detector: sees the subject only inside its field of
+            view, at its frame rate, late by its latency, with noise and dropped frames. The default is
+            perfect (sees all round, every step, exactly); scenarios.py has realistic settings.
+    imu     yaw rate and body accelerations, exact.
 """
 import math
+import random
+from collections import deque
 from dataclasses import dataclass, field
 
 
@@ -42,6 +48,7 @@ class Agv:
     yaw: float = 0.0
     v: float = 0.0
     w: float = 0.0
+    a: float = 0.0                # m/s^2, forward acceleration over the last step
     ring: float = 0.0             # relative to the base; 0 = facing forward. Unbounded (it can keep turning).
     ring_vel: float = 0.0
 
@@ -49,7 +56,9 @@ class Agv:
         lim = self.limits
         v_cmd = max(-lim.v_max, min(lim.v_max, v_cmd))
         w_cmd = max(-lim.w_max, min(lim.w_max, w_cmd))
+        v_before = self.v
         self.v = approach(self.v, v_cmd, lim.a_max * dt)
+        self.a = (self.v - v_before) / dt
         self.w = approach(self.w, w_cmd, lim.alpha_max * dt)
         self.x += self.v * math.cos(self.yaw) * dt
         self.y += self.v * math.sin(self.yaw) * dt
@@ -82,29 +91,40 @@ class Subject:
     waypoints: list = field(default_factory=lambda: list(DEFAULT_WAYPOINTS))
     speed: float = 1.2            # m/s, walking pace
     radius: float = 0.25          # m, as seen by the ultrasonics
+    dwell: dict = field(default_factory=dict)   # waypoint index -> seconds to stand still on reaching it
     x: float = 0.0
     y: float = 0.0
     vx: float = 0.0
     vy: float = 0.0
     _next: int = 1
+    _wait: float = 0.0
 
     def __post_init__(self):
         self.x, self.y = self.waypoints[0]
 
     def step(self, dt):
-        remaining = self.speed * dt
+        time_left = dt
         x0, y0 = self.x, self.y
-        while remaining > 1e-12:
+        while time_left > 1e-12:
+            if self._wait > 0.0:
+                waited = min(self._wait, time_left)
+                self._wait -= waited
+                time_left -= waited
+                continue
+            if self.speed <= 0.0:
+                break
+            remaining = self.speed * time_left
             tx, ty = self.waypoints[self._next]
             gap = math.hypot(tx - self.x, ty - self.y)
             if gap <= remaining:
                 self.x, self.y = tx, ty
-                remaining -= gap
+                time_left -= gap / self.speed
+                self._wait = self.dwell.get(self._next, 0.0)
                 self._next = (self._next + 1) % len(self.waypoints)
             else:
                 self.x += (tx - self.x) / gap * remaining
                 self.y += (ty - self.y) / gap * remaining
-                remaining = 0.0
+                time_left = 0.0
         self.vx, self.vy = (self.x - x0) / dt, (self.y - y0) / dt
 
 
@@ -131,6 +151,44 @@ class Sonar:
         return max(self.min_range, best)
 
 
+@dataclass
+class Camera:
+    """What perception will deliver: subject positions in the world frame, captured at some time, released later.
+
+    Sees the subject only when it is within fov/2 of the direction the ring faces and within max_range.
+    """
+    fov: float = 2 * math.pi      # rad, full horizontal field of view; 2*pi = sees all round
+    max_range: float = 20.0       # m
+    rate: float = 0.0             # Hz; 0 = a frame every simulation step
+    latency: float = 0.0          # s, from capture to the measurement being available
+    noise: float = 0.0            # m, standard deviation on each axis
+    dropout: float = 0.0          # probability that a frame in view still yields no detection
+    seed: int = 0
+
+    def __post_init__(self):
+        self._rng = random.Random(self.seed)
+        self._pending = deque()   # (release time, capture time, x, y)
+        self._next_frame = 0.0
+
+    def sees(self, agv, subject):
+        dx, dy = subject.x - agv.x, subject.y - agv.y
+        in_fov = abs(wrap(math.atan2(dy, dx) - agv.ring_world())) <= self.fov / 2
+        return in_fov and math.hypot(dx, dy) <= self.max_range
+
+    def step(self, time, agv, subject):
+        """Capture a frame if one is due; return the measurements [(capture time, x, y)] released by now."""
+        if time + 1e-9 >= self._next_frame:
+            self._next_frame = time + (1.0 / self.rate if self.rate > 0 else 0.0)
+            if self.sees(agv, subject) and self._rng.random() >= self.dropout:
+                x = subject.x + self._rng.gauss(0.0, self.noise) if self.noise else subject.x
+                y = subject.y + self._rng.gauss(0.0, self.noise) if self.noise else subject.y
+                self._pending.append((time + self.latency, time, x, y))
+        released = []
+        while self._pending and self._pending[0][0] <= time + 1e-9:
+            released.append(self._pending.popleft()[1:])
+        return released
+
+
 def default_sonars(base_length=0.40, base_width=0.30, **kwargs):
     return {
         'front': Sonar(base_length / 2, 0.0, 0.0, **kwargs),
@@ -145,6 +203,7 @@ class World:
     agv: Agv = field(default_factory=Agv)
     subject: Subject = field(default_factory=Subject)
     sonars: dict = field(default_factory=default_sonars)
+    camera: Camera = field(default_factory=Camera)
     obstacles: list = field(default_factory=list)      # static discs: (x, y, radius)
     time: float = 0.0
 
@@ -152,6 +211,14 @@ class World:
         self.subject.step(dt)
         self.agv.step(dt, v_cmd, w_cmd, ring_target)
         self.time += dt
+
+    def detections(self):
+        """Subject measurements [(capture time, x, y)] that perception has delivered by now. Call once per step."""
+        return self.camera.step(self.time, self.agv, self.subject)
+
+    def imu(self):
+        """(yaw rate, forward acceleration, sideways acceleration) in the robot frame."""
+        return self.agv.w, self.agv.a, self.agv.v * self.agv.w
 
     def ranges(self):
         discs = self.obstacles + [(self.subject.x, self.subject.y, self.subject.radius)]

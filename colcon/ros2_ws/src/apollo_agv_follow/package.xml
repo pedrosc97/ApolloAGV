@@ -2,7 +2,7 @@
 <package format="3">
   <name>apollo_agv_follow</name>
   <version>0.1.0</version>
-  <description>Follow controller: keeps a set distance to the subject and points the camera ring at it.</description>
+  <description>Follow guidance: pluggable algorithms that keep a set distance to the subject and point the camera ring at it.</description>
   <maintainer email="pedro.sc.97@gmail.com">Pedro Sanchez</maintainer>
   <license>Proprietary</license>
   <exec_depend>rclpy</exec_depend>
@@ -10,6 +10,7 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
   <test_depend>python3-pytest</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>
