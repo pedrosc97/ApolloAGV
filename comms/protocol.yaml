@@ -5,6 +5,7 @@
 # which writes
 #     arduino/ring_stepper/ring_protocol.h                         (C++, Arduino)
 #     colcon/ros2_ws/src/apollo_ring/apollo_ring/ring_protocol.py  (Python, ROS 2 side)
+#     arduino/tools/ring_protocol.js                               (JavaScript, browser ring console)
 # Never hand-edit the generated files. Commit them together with this file;
 # neither build runs the generator. `python3 comms/gen_protocol.py --check`
 # fails if they are out of date.

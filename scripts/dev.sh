@@ -9,8 +9,9 @@
 #   bash scripts/dev.sh run -- <cmd>   run one command in the container, e.g. run -- ros2 topic list
 #
 #   bash scripts/dev.sh test-native    the pure-Python tests straight on the Mac (no Docker, no ROS), firmware protocol included
-#   bash scripts/dev.sh gen            regenerate ring_protocol.h / ring_protocol.py from protocol.yaml
+#   bash scripts/dev.sh gen            regenerate ring_protocol.h / .py / .js from comms/protocol.yaml
 #   bash scripts/dev.sh run2d [args]   closed-loop 2D run straight on the Mac, e.g. run2d --plot follow.png
+#   bash scripts/dev.sh ring-ui        ring console in Chrome (Web Serial to the Arduino, or a simulated ring)
 #
 #   bash scripts/dev.sh webots-server  on the Mac, leave running: lets the container start Webots.app
 #   bash scripts/dev.sh webots-check   in a second terminal: stock TurtleBot demo, proves container <-> Webots works
@@ -65,6 +66,12 @@ case "$CMD" in
       || echo "NOTE: needs pytest on the Mac (python3 -m pip install pytest pyyaml). The description test also needs xacro and is skipped without it." ;;
   run2d)
     cd "$REPO" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="colcon/ros2_ws/src/apollo_agv_follow:colcon/ros2_ws/src/apollo_agv_sim" python3 -m apollo_agv_sim.run2d "$@" ;;
+  ring-ui)
+    # Web Serial needs a secure context; localhost counts. Chrome or Edge only.
+    URL="http://localhost:8770/ring_console.html"
+    echo "== Ring console at $URL   (Ctrl-C here to stop)"
+    ( sleep 1; open -a "Google Chrome" "$URL" 2>/dev/null || open "$URL" ) &
+    cd "$REPO/arduino/tools" && exec python3 -m http.server 8770 --bind 127.0.0.1 ;;
   webots-server)
     export WEBOTS_HOME="${WEBOTS_HOME:-/Applications/Webots.app}"
     [ -d "$WEBOTS_HOME" ] || { echo "FAILED: $WEBOTS_HOME not found. Install Webots R2025a or newer from https://cyberbotics.com"; exit 1; }
@@ -79,5 +86,5 @@ case "$CMD" in
     echo "== Expect Webots to open on the Mac with a TurtleBot3 in an apartment. Ctrl-C to stop."
     in_container bash -c 'ros2 launch webots_ros2_turtlebot robot_launch.py' ;;
   *)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

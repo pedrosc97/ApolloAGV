@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Generate the ring serial protocol for both sides from protocol.yaml.
 
-    python3 comms/gen_protocol.py           write both files
-    python3 comms/gen_protocol.py --check   exit 1 if either file is out of date
+    python3 comms/gen_protocol.py           write all three files
+    python3 comms/gen_protocol.py --check   exit 1 if any file is out of date
 
-Outputs (both committed to git; neither build runs this script):
+Outputs (all committed to git; no build runs this script):
     arduino/ring_stepper/ring_protocol.h
     colcon/ros2_ws/src/apollo_ring/apollo_ring/ring_protocol.py
+    arduino/tools/ring_protocol.js          (browser tools: the ring console)
 
 Needs only Python 3 and PyYAML (pip install pyyaml).
 """
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = ROOT / "comms" / "protocol.yaml"
 OUT_H = ROOT / "arduino" / "ring_stepper" / "ring_protocol.h"
 OUT_PY = ROOT / "colcon" / "ros2_ws" / "src" / "apollo_ring" / "apollo_ring" / "ring_protocol.py"
+OUT_JS = ROOT / "arduino" / "tools" / "ring_protocol.js"
 
 # schema type -> (C++ type, struct code, size in bytes)
 TYPES = {
@@ -338,13 +340,152 @@ def gen_py(s: dict) -> str:
     return "\n".join(o)
 
 
+# --------------------------------------------------------------------- JavaScript
+
+# schema type -> DataView accessor suffix
+JS_VIEW = {"u8": "Uint8", "i8": "Int8", "u16": "Uint16", "i16": "Int16", "u32": "Uint32", "i32": "Int32", "f32": "Float32"}
+
+
+def gen_js(s: dict) -> str:
+    import json
+
+    msgs = {
+        m["type"]: {
+            "name": name,
+            "len": m["len"],
+            "doc": m["doc"],
+            "fields": [{"name": f["name"], "type": f["type"], **({"enum": f["enum"]} if "enum" in f else {})} for f in m["fields"]],
+        }
+        for name, m in s["messages"].items()
+    }
+    enums = {ename: e["values"] for ename, e in s["enums"].items()}
+    o = [
+        f"// {BANNER}",
+        "//",
+        "// Apollo ring stepper: Pi <-> Arduino serial protocol, for the browser tools in arduino/tools.",
+        "// A classic script (not a module) so it also loads from file://. Defines window.RingProtocol.",
+        "//",
+        "// Frame:  0xAA 0x55 | type | len | payload[len] | crc8   (CRC-8/MAXIM, little-endian)",
+        '"use strict";',
+        "(function (root) {",
+        "  const P = {};",
+    ]
+    for k, v in s["constants"].items():
+        o.append(f"  P.{k} = {f'0x{v:02X}' if k.startswith('SYNC') else v};")
+    o += ["  P.MAX_FRAME = P.MAX_PAYLOAD + 5;", ""]
+    o.append("  P.MSG = Object.freeze({")
+    for name, m in s["messages"].items():
+        o.append(f"    {name}: 0x{m['type']:02X},")
+    o += ["  });", ""]
+    o.append(f"  P.ENUMS = {json.dumps(enums)};")
+    for ename in enums:
+        o.append(f"  P.{ename} = Object.freeze(P.ENUMS.{ename});")
+    o.append(f"  P.MESSAGES = {json.dumps({str(k): v for k, v in msgs.items()})};")
+    o.append(f"  const VIEW = {json.dumps(JS_VIEW)};")
+    o.append("  const SIZE = { u8: 1, i8: 1, u16: 2, i16: 2, u32: 4, i32: 4, f32: 4 };")
+    o += [
+        "",
+        "  P.crc8 = function (bytes) {",
+        "    let crc = 0;",
+        "    for (const b of bytes) {",
+        "      crc ^= b;",
+        "      for (let i = 0; i < 8; i++) crc = crc & 1 ? (crc >> 1) ^ 0x8c : crc >> 1;",
+        "    }",
+        "    return crc;",
+        "  };",
+        "",
+        "  // Complete frame for a message type and raw payload.",
+        "  P.encode = function (type, payload = new Uint8Array(0)) {",
+        "    if (payload.length > P.MAX_PAYLOAD) throw new Error(`payload ${payload.length} B exceeds MAX_PAYLOAD`);",
+        "    const out = new Uint8Array(payload.length + 5);",
+        "    out[0] = P.SYNC0;",
+        "    out[1] = P.SYNC1;",
+        "    out[2] = type;",
+        "    out[3] = payload.length;",
+        "    out.set(payload, 4);",
+        "    out[4 + payload.length] = P.crc8(out.subarray(2, 4 + payload.length));",
+        "    return out;",
+        "  };",
+        "",
+        "  // Typed message by name, e.g. encodeMsg('CMD_VEL', { velocity: 1.5 }).",
+        "  P.encodeMsg = function (name, values = {}) {",
+        "    const type = P.MSG[name];",
+        "    const m = P.MESSAGES[type];",
+        "    const p = new Uint8Array(m.len);",
+        "    const dv = new DataView(p.buffer);",
+        "    let off = 0;",
+        "    for (const f of m.fields) {",
+        "      dv['set' + VIEW[f.type]](off, Number(values[f.name] ?? 0), true);",
+        "      off += SIZE[f.type];",
+        "    }",
+        "    return P.encode(type, p);",
+        "  };",
+        "",
+        "  // { type: 'STATUS', angle: ..., ... } for a parsed frame, or null if the type or length is unknown.",
+        "  P.decode = function (type, payload) {",
+        "    const m = P.MESSAGES[type];",
+        "    if (!m || payload.length !== m.len) return null;",
+        "    const dv = new DataView(payload.buffer, payload.byteOffset, payload.length);",
+        "    const out = { type: m.name };",
+        "    let off = 0;",
+        "    for (const f of m.fields) {",
+        "      out[f.name] = dv['get' + VIEW[f.type]](off, true);",
+        "      off += SIZE[f.type];",
+        "    }",
+        "    return out;",
+        "  };",
+        "",
+        "  // Feed it raw bytes; feed() returns [{ type, payload }] for every frame with a good CRC.",
+        "  P.Parser = class {",
+        "    constructor() {",
+        "      this.buf = [];",
+        "      this.crcErrors = 0;",
+        "    }",
+        "    feed(data) {",
+        "      const buf = this.buf;",
+        "      for (const b of data) buf.push(b);",
+        "      const frames = [];",
+        "      for (;;) {",
+        "        let start = -1;",
+        "        for (let i = 0; i + 1 < buf.length; i++) {",
+        "          if (buf[i] === P.SYNC0 && buf[i + 1] === P.SYNC1) { start = i; break; }",
+        "        }",
+        "        if (start < 0) {",
+        "          // keep a trailing SYNC0, it may be the start of the next frame",
+        "          buf.splice(0, buf.length && buf[buf.length - 1] === P.SYNC0 ? buf.length - 1 : buf.length);",
+        "          return frames;",
+        "        }",
+        "        buf.splice(0, start);",
+        "        if (buf.length < 4) return frames;",
+        "        const n = buf[3];",
+        "        if (n > P.MAX_PAYLOAD) { buf.splice(0, 2); continue; }",
+        "        if (buf.length < n + 5) return frames;",
+        "        const body = Uint8Array.from(buf.slice(2, 4 + n));",
+        "        if (P.crc8(body) === buf[4 + n]) {",
+        "          buf.splice(0, n + 5);",
+        "          frames.push({ type: body[0], payload: body.subarray(2) });",
+        "        } else {",
+        "          this.crcErrors++;",
+        "          buf.splice(0, 2);",
+        "        }",
+        "      }",
+        "    }",
+        "  };",
+        "",
+        "  root.RingProtocol = Object.freeze(P);",
+        '})(typeof window !== "undefined" ? window : globalThis);',
+        "",
+    ]
+    return "\n".join(o)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--check", action="store_true", help="exit 1 if the generated files are out of date")
     a = ap.parse_args()
     s = load()
     stale = []
-    for path, text in ((OUT_H, gen_h(s)), (OUT_PY, gen_py(s))):
+    for path, text in ((OUT_H, gen_h(s)), (OUT_PY, gen_py(s)), (OUT_JS, gen_js(s))):
         rel = path.relative_to(ROOT)
         current = path.read_text() if path.exists() else None
         if current == text:

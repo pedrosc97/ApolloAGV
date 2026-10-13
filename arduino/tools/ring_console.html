@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ring Console</title>
+<!--
+  Apollo ring console: talks to the ring stepper Arduino over Web Serial (Chrome or Edge), sends
+  CMD_HOME / CMD_ENABLE / CMD_VEL and plots the STATUS stream. "Simulate" runs a stand-in for the
+  firmware in the page, so the UI can be tried without a board.
+
+  Launch:  bash scripts/dev.sh ring-ui      (serves arduino/tools on http://localhost:8770 and opens Chrome)
+  or open this file directly in Chrome. The protocol comes from ring_protocol.js, generated from
+  comms/protocol.yaml; never hand-edit that file.
+-->
+<script src="ring_protocol.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: #2a78d6;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --button: #f0efec;
+  --button-hover: #e6e5e0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --button: #262624;
+    --button-hover: #31312e;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --series-1: #3987e5;
+  --button: #262624;
+  --button-hover: #31312e;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+h1 { font-size: 18px; margin: 0 auto 0 0; font-weight: 600; }
+h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; color: var(--text-secondary); letter-spacing: .02em; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+.grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
+@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+button {
+  font: inherit; color: var(--text-primary); background: var(--button); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer; touch-action: none; user-select: none;
+}
+button:hover:not(:disabled) { background: var(--button-hover); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--series-1); border-color: transparent; color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--series-1); }
+button.danger { color: var(--critical); }
+button:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.stack { display: grid; gap: 14px; }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--border); font-size: 13px; color: var(--text-secondary); white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex: none; }
+.banner { border-left: 3px solid var(--warning); padding: 10px 12px; background: var(--surface); border-radius: 6px;
+  color: var(--text-secondary); }
+.banner[hidden] { display: none; }
+
+.state { display: inline-flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 600; }
+.state .icon { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 14px;
+  color: #fff; background: var(--text-muted); }
+.flags { display: flex; flex-wrap: wrap; gap: 6px; }
+.flag { font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); color: var(--text-muted); }
+.flag::before { content: "○ "; }
+.flag.on { color: var(--text-primary); border-color: currentColor; }
+.flag.on::before { content: "● "; }
+.flag.on[data-level="good"]::before { color: var(--good); }
+.flag.on[data-level="warning"]::before { color: var(--warning); }
+.flag.on[data-level="serious"]::before { color: var(--serious); }
+.flag.on[data-level="critical"]::before { color: var(--critical); }
+.flag.on[data-level="neutral"]::before { color: var(--series-1); }
+
+.readouts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.readout .label { font-size: 12px; color: var(--text-muted); }
+.readout .value { font-size: 22px; font-weight: 600; }
+.readout .sub { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
+.dial-wrap { display: grid; place-items: center; }
+#dial { width: 100%; max-width: 340px; height: auto; display: block; }
+.dial-caption { text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+.jog { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+.jog button { padding: 14px 10px; font-weight: 600; }
+.jog button.held { background: var(--series-1); color: #fff; }
+.speed { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; color: var(--text-secondary); font-size: 13px; }
+.speed input { width: 100%; accent-color: var(--series-1); }
+.hint { font-size: 12px; color: var(--text-muted); }
+kbd { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
+
+.charts { position: relative; display: grid; gap: 4px; }
+.chart-title { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-secondary); margin-top: 6px; }
+.charts canvas { width: 100%; height: 170px; display: block; cursor: crosshair; }
+#tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); display: none;
+  font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 2; }
+#tooltip b { font-weight: 600; }
+
+#log { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-secondary); }
+#log li { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; border-bottom: 1px solid var(--grid); padding: 2px 0; }
+#log time { color: var(--text-muted); }
+#log .tx { color: var(--series-1); }
+#log .bad { color: var(--critical); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Ring console</h1>
+    <span class="pill" id="link-pill"><span class="dot" id="link-dot"></span><span id="link-text">Disconnected</span></span>
+    <span class="pill" title="STATUS frames per second (firmware sends 50 Hz)"><span id="rate">0</span>&nbsp;Hz</span>
+    <span class="pill" title="Frames dropped for a bad checksum">CRC errors&nbsp;<span id="crc">0</span></span>
+    <div class="row">
+      <button class="primary" id="btn-connect">Connect serial</button>
+      <button id="btn-sim">Simulate</button>
+      <button id="btn-disconnect" disabled>Disconnect</button>
+    </div>
+  </header>
+
+  <div class="banner" id="no-serial" hidden>
+    This browser has no Web Serial, so it can't reach the Arduino. Use Chrome or Edge, opened from
+    <kbd>localhost</kbd> or directly from the file. <b>Simulate</b> works anywhere.
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>RING POSITION (TOP VIEW)</h2>
+      <div class="dial-wrap">
+        <svg id="dial" viewBox="0 0 320 320" role="img" aria-label="Ring angle dial"></svg>
+      </div>
+      <div class="dial-caption" id="dial-caption">Positive angles are counter-clockwise seen from above. Zero is the home edge.</div>
+    </section>
+
+    <section class="card stack">
+      <div>
+        <h2>STATE</h2>
+        <div class="row" style="justify-content: space-between">
+          <span class="state"><span class="icon" id="state-icon">?</span><span id="state-text">No data</span></span>
+          <span class="hint" id="state-hint"></span>
+        </div>
+      </div>
+      <div class="flags" id="flags"></div>
+      <div class="readouts">
+        <div class="readout"><div class="label">Angle</div><div class="value" id="ro-angle">–</div><div class="sub" id="ro-angle-rad">–</div></div>
+        <div class="readout"><div class="label">Velocity</div><div class="value" id="ro-vel">–</div><div class="sub">rad/s at the ring</div></div>
+        <div class="readout"><div class="label">Last centre crossing</div><div class="value" id="ro-cross">–</div><div class="sub">step-count error</div></div>
+      </div>
+      <div>
+        <h2>COMMANDS</h2>
+        <div class="row">
+          <button class="primary" id="btn-home" disabled title="CMD_HOME: enable the driver and find the home edge">Home</button>
+          <button id="btn-enable" disabled title="CMD_ENABLE 1: energise the motor (does not home it)">Enable</button>
+          <button class="danger" id="btn-release" disabled title="CMD_ENABLE 0: release the motor. Loses the homed position.">Release motor</button>
+          <button id="btn-slip" hidden title="Simulation only: the ring slips 5° without the step count noticing">Slip ring 5°</button>
+        </div>
+      </div>
+      <div class="stack">
+        <h2 style="margin:0">JOG (READY ONLY)</h2>
+        <div class="jog">
+          <button id="jog-pos" disabled aria-label="Jog counter-clockwise, positive">◀ CCW (+)</button>
+          <button id="jog-stop" disabled>Stop</button>
+          <button id="jog-neg" disabled aria-label="Jog clockwise, negative">CW (−) ▶</button>
+        </div>
+        <label class="speed">Speed <input type="range" id="speed" min="0.05" max="3" step="0.05" value="0.5"> <span id="speed-val">0.50 rad/s</span></label>
+        <div class="hint">Hold a jog button, or hold <kbd>←</kbd> / <kbd>→</kbd>. Velocity is sent at 25 Hz while held; let go
+          and the ring ramps to a stop. The firmware's 250 ms watchdog stops it too if this page stalls.</div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="row" style="justify-content: space-between; margin-bottom: 4px">
+      <h2 style="margin:0">LAST 30 SECONDS</h2>
+      <div class="row"><button id="btn-pause">Pause</button><button id="btn-csv" title="Download the recorded STATUS frames as CSV">Export CSV</button></div>
+    </div>
+    <div class="charts" id="charts">
+      <div class="chart-title"><span>Angle (deg)</span><span class="hint">dashed: ±150° soft limits</span></div>
+      <canvas id="chart-angle" aria-label="Ring angle over the last 30 seconds"></canvas>
+      <div class="chart-title"><span>Velocity (rad/s)</span><span class="hint">dashed: ±3 rad/s max</span></div>
+      <canvas id="chart-vel" aria-label="Ring velocity over the last 30 seconds"></canvas>
+      <div id="tooltip"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>EVENTS</h2>
+    <ul id="log" aria-live="polite"></ul>
+  </section>
+</main>
+
+<script>
+"use strict";
+const P = window.RingProtocol;
+const STATE_NAMES = Object.fromEntries(Object.entries(P.State).map(([k, v]) => [v, k]));
+const FLAG_INFO = {
+  ENABLED:   { label: "Driver on",       level: "good" },
+  HOME_SW:   { label: "Home flag",       level: "neutral" },
+  WATCHDOG:  { label: "Watchdog",        level: "warning" },
+  LIMIT_NEG: { label: "Limit −",         level: "serious" },
+  LIMIT_POS: { label: "Limit +",         level: "serious" },
+  STEP_LOSS: { label: "Step loss",       level: "critical" },
+};
+const STATE_STYLE = {
+  UNHOMED: { icon: "○", color: "var(--text-muted)", hint: "Angle is relative to power-up until homed." },
+  HOMING:  { icon: "◐", color: "var(--warning)",    hint: "Finding the home edge…" },
+  READY:   { icon: "✓", color: "var(--good)",       hint: "Homed. Jog is available." },
+  FAULT:   { icon: "✕", color: "var(--critical)",   hint: "Homing gave up: no flag edge within 190°. Check the sensor, then Home again." },
+};
+// Mechanical limits, from arduino/ring_stepper/config.h (not part of the protocol).
+const SOFT_LIMIT_DEG = 150, HARD_LIMIT_DEG = 170, MAX_VEL = 3.0;
+const WINDOW_S = 30;
+const DEG = 180 / Math.PI;
+const $ = (id) => document.getElementById(id);
+
+// ---------------------------------------------------------------- event log
+function log(msg, cls = "") {
+  const li = document.createElement("li");
+  const t = new Date();
+  li.innerHTML = `<time>${t.toLocaleTimeString([], { hour12: false })}.${String(t.getMilliseconds()).padStart(3, "0")}</time><span class="${cls}"></span>`;
+  li.lastChild.textContent = msg;
+  const ul = $("log");
+  ul.prepend(li);
+  while (ul.children.length > 300) ul.lastChild.remove();
+}
+
+// ---------------------------------------------------------------- links
+// Both links expose: open(), write(bytes), close(), and call onBytes(Uint8Array) / onClose().
+
+class SerialLink {
+  constructor(onBytes, onClose) { this.onBytes = onBytes; this.onClose = onClose; this.name = "Serial"; }
+  async open() {
+    this.port = await navigator.serial.requestPort();
+    await this.port.open({ baudRate: P.SERIAL_BAUD });
+    const info = this.port.getInfo();
+    this.name = info.usbVendorId ? `USB ${info.usbVendorId.toString(16)}:${(info.usbProductId || 0).toString(16)}` : "Serial";
+    this.writer = this.port.writable.getWriter();
+    this.closing = false;
+    this.readLoop();
+  }
+  async readLoop() {
+    try {
+      while (this.port.readable && !this.closing) {
+        this.reader = this.port.readable.getReader();
+        try {
+          for (;;) {
+            const { value, done } = await this.reader.read();
+            if (done) break;
+            if (value) this.onBytes(value);
+          }
+        } finally { this.reader.releaseLock(); }
+      }
+    } catch (e) {
+      if (!this.closing) log(`Serial read failed: ${e.message}`, "bad");
+    }
+    if (!this.closing) this.onClose("port lost");
+  }
+  async write(bytes) {
+    try { await this.writer.write(bytes); } catch (e) { log(`Serial write failed: ${e.message}`, "bad"); }
+  }
+  async close() {
+    this.closing = true;
+    try { await this.reader?.cancel(); } catch {}
+    try { this.writer?.releaseLock(); } catch {}
+    try { await this.port?.close(); } catch {}
+  }
+}
+
+// Stand-in for the firmware: same states, homing sequence, ramp, soft limits, watchdog and status
+// stream as ring_core.h, over the same byte protocol. The ring physically stops at the ±170° hard
+// stops, so driving into one makes the step count drift like a real stall would.
+class SimLink {
+  constructor(onBytes, onClose) { this.onBytes = onBytes; this.onClose = onClose; this.name = "Simulated ring"; }
+  open() {
+    const K = this.K = {
+      SPR: 200 * 8 * 3 / (2 * Math.PI), SOFT: 2.618, MAXV: 3.0, ACC: 20.0, SEEK: 0.5, APPROACH: 0.1,
+      HOME_MAX: 3.32, STEP_LOSS: 0.052, DEBOUNCE: 3, HARD: HARD_LIMIT_DEG / DEG,
+    };
+    this.parser = new P.Parser();
+    this.phys = (Math.random() * 200 - 100) / DEG * K.SPR;  // true ring angle in steps, 0 = home edge
+    this.pos = 0; this.frac = 0;
+    this.state = P.State.UNHOMED; this.phase = 0; this.phaseStart = 0; this.offset = 0;
+    this.cmd = 0; this.vel = 0; this.crossErr = 0; this.haveCmd = false; this.enabled = false; this.stepLoss = false;
+    this.sw = this.rawSw(); this.swCount = 0; this.flags = 0;
+    this.t = 0; this.lastCmd = 0; this.lastStatus = 0;
+    this.wall = performance.now();
+    this.timer = setInterval(() => this.run(), 10);
+    return Promise.resolve();
+  }
+  rawSw() { return this.phys < 0; }
+  write(bytes) {
+    for (const f of this.parser.feed(bytes)) this.handle(f.type, f.payload);
+    return Promise.resolve();
+  }
+  close() { clearInterval(this.timer); return Promise.resolve(); }
+  slip(deg) { this.phys -= deg / DEG * this.K.SPR; }
+  handle(type, p) {
+    const m = P.decode(type, p);
+    if (!m) return;
+    if (m.type === "CMD_VEL") {
+      let v = Number.isNaN(m.velocity) ? 0 : Math.max(-this.K.MAXV, Math.min(this.K.MAXV, m.velocity));
+      this.cmd = v * this.K.SPR; this.lastCmd = this.t; this.haveCmd = true;
+    } else if (m.type === "CMD_HOME") {
+      if (this.state !== P.State.HOMING) {
+        this.enabled = true; this.stepLoss = false; this.crossErr = 0; this.state = P.State.HOMING;
+        this.enter(this.sw ? 0 : 1);
+      }
+    } else if (m.type === "CMD_ENABLE") {
+      if (m.enabled) this.enabled = true;
+      else { this.enabled = false; this.vel = 0; this.state = P.State.UNHOMED; }
+    }
+  }
+  enter(phase) { this.phase = phase; this.phaseStart = this.pos; }
+  homing() {
+    const K = this.K;
+    if (Math.abs(this.pos - this.phaseStart) > K.HOME_MAX * K.SPR) { this.state = P.State.FAULT; return 0; }
+    if (this.phase === 0) { if (!this.sw) { this.enter(1); return 0; } return K.SEEK * K.SPR; }
+    if (this.phase === 1) { if (this.sw) { this.enter(2); return 0; } return -K.SEEK * K.SPR; }
+    if (!this.sw) { this.offset = this.pos; this.state = P.State.READY; this.haveCmd = false; return 0; }
+    return K.APPROACH * K.SPR;
+  }
+  control(dt) {
+    const K = this.K, F = P.Flags;
+    const prevSw = this.sw;
+    const raw = this.rawSw();
+    if (raw === this.sw) this.swCount = 0; else if (++this.swCount >= K.DEBOUNCE) { this.sw = raw; this.swCount = 0; }
+    let flags = 0, target = 0;
+    if (this.state === P.State.HOMING) target = this.homing();
+    else if (this.state === P.State.READY) {
+      const pos = this.pos - this.offset;
+      const timedOut = !this.haveCmd || this.t - this.lastCmd > P.WATCHDOG_MS;
+      if (timedOut) flags |= F.WATCHDOG;
+      target = timedOut ? 0 : this.cmd;
+      const softMax = K.SOFT * K.SPR, k = 2 * 0.8 * K.ACC * K.SPR;
+      const vPos = softMax - pos > 0 ? Math.sqrt(k * (softMax - pos)) : 0;
+      const vNeg = softMax + pos > 0 ? Math.sqrt(k * (softMax + pos)) : 0;
+      if (target > vPos) { target = vPos; flags |= F.LIMIT_POS; }
+      if (target < -vNeg) { target = -vNeg; flags |= F.LIMIT_NEG; }
+      if (this.sw !== prevSw) {
+        this.crossErr = pos / K.SPR;
+        if (Math.abs(this.crossErr) > K.STEP_LOSS) this.stepLoss = true;
+      }
+    }
+    const maxDv = K.ACC * K.SPR * dt;
+    this.vel += Math.max(-maxDv, Math.min(maxDv, target - this.vel));
+    if (!this.enabled) this.vel = 0;
+    const rate = Math.abs(this.vel) < 4 ? 0 : this.vel;
+    this.frac += rate * dt;
+    const whole = Math.trunc(this.frac);
+    this.frac -= whole;
+    this.pos += whole;
+    const hard = K.HARD * K.SPR;
+    this.phys = Math.max(-hard, Math.min(hard, this.phys + whole));  // the hard stops win; the count keeps going
+    if (this.sw) flags |= F.HOME_SW;
+    if (this.stepLoss) flags |= F.STEP_LOSS;
+    if (this.enabled) flags |= F.ENABLED;
+    this.flags = flags;
+  }
+  run() {
+    const now = performance.now();
+    let ms = Math.min(100, Math.floor(now - this.wall));
+    this.wall += ms;
+    while (ms-- > 0) {
+      this.t += 1;
+      this.control(0.001);
+      if (this.t - this.lastStatus >= P.STATUS_PERIOD_MS) {
+        this.lastStatus = this.t;
+        this.onBytes(P.encodeMsg("STATUS", {
+          angle: (this.pos - this.offset) / this.K.SPR, velocity: this.vel / this.K.SPR,
+          state: this.state, flags: this.flags, cross_error: this.crossErr,
+        }));
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- app state
+let link = null;
+let parser = new P.Parser();
+let last = null;              // last STATUS
+let firstStatusAt = 0;
+const samples = [];           // { t (s, performance clock), angle (rad), velocity, state, flags }
+const recorded = [];          // every STATUS since connect, for CSV export
+let statusTimes = [];
+let paused = false, pausedAt = 0;
+let jog = 0, jogTimer = null;
+
+function onBytes(bytes) {
+  for (const f of parser.feed(bytes)) {
+    const m = P.decode(f.type, f.payload);
+    if (m && m.type === "STATUS") onStatus(m);
+  }
+  $("crc").textContent = parser.crcErrors;
+}
+
+function onStatus(s) {
+  const t = performance.now() / 1000;
+  if (!last) { firstStatusAt = t; log(`First STATUS received from ${link.name}`); setLink("live"); }
+  if (last) {
+    if (s.state !== last.state) log(`State ${STATE_NAMES[last.state]} → ${STATE_NAMES[s.state]}${s.state === P.State.READY ? ` (zero set)` : ""}`, s.state === P.State.FAULT ? "bad" : "");
+    for (const [name, bit] of Object.entries(P.Flags)) {
+      const was = last.flags & bit, now = s.flags & bit;
+      // HOME_SW flips at every centre crossing and WATCHDOG at every jog release: too chatty to log.
+      if (was !== now && name !== "HOME_SW" && name !== "WATCHDOG") log(`${FLAG_INFO[name].label} ${now ? "set" : "cleared"}${name === "STEP_LOSS" && now ? ` (centre crossing off by ${(s.cross_error * DEG).toFixed(2)}°, re-home)` : ""}`, now && (name === "STEP_LOSS" || name.startsWith("LIMIT")) ? "bad" : "");
+    }
+  }
+  last = s;
+  samples.push({ t, ...s });
+  recorded.push({ t: t - firstStatusAt, ...s });
+  if (recorded.length > 50 * 60 * 30) recorded.shift();  // keep 30 minutes
+  while (samples.length && samples[0].t < t - WINDOW_S - 1) samples.shift();
+  statusTimes.push(t);
+  dirty = true;
+}
+
+function setLink(mode) {
+  const dot = $("link-dot"), text = $("link-text");
+  const live = mode === "live", waiting = mode === "waiting";
+  dot.style.background = live ? "var(--good)" : waiting ? "var(--warning)" : "var(--text-muted)";
+  text.textContent = live ? `${link.name}` : waiting ? "Waiting for STATUS…" : mode === "stale" ? "No STATUS for 0.5 s" : "Disconnected";
+  if (mode === "stale") dot.style.background = "var(--critical)";
+  const connected = !!link;
+  $("btn-connect").disabled = connected || !("serial" in navigator);
+  $("btn-sim").disabled = connected;
+  $("btn-disconnect").disabled = !connected;
+  $("btn-slip").hidden = !(link instanceof SimLink);
+  updateControls();
+}
+
+async function connect(kind) {
+  parser = new P.Parser();
+  last = null; samples.length = 0; recorded.length = 0; statusTimes = [];
+  const l = kind === "sim" ? new SimLink(onBytes, onClosed) : new SerialLink(onBytes, onClosed);
+  try {
+    await l.open();
+  } catch (e) {
+    if (e.name !== "NotFoundError") log(`Could not open: ${e.message}`, "bad");  // NotFoundError = picker cancelled
+    return;
+  }
+  link = l;
+  log(kind === "sim" ? "Simulated ring started (random start angle, unhomed)" : `Opened ${l.name} at ${P.SERIAL_BAUD} baud. The Uno reboots when the port opens; STATUS starts in about 2 s.`);
+  setLink("waiting");
+}
+
+async function disconnect(reason) {
+  stopJog();
+  const l = link;
+  link = null;
+  if (l) await l.close();
+  log(`Disconnected${reason ? ` (${reason})` : ""}`);
+  last = null;
+  setLink("off");
+  renderStatus();
+}
+function onClosed(reason) { if (link) disconnect(reason); }
+
+function send(name, values) {
+  if (!link) return;
+  const bytes = P.encodeMsg(name, values);
+  link.write(bytes);
+  if (name !== "CMD_VEL") log(`→ ${name}${values ? " " + JSON.stringify(values) : ""}`, "tx");
+}
+
+// ---------------------------------------------------------------- jog
+function startJog(sign) {
+  if (!canJog()) return;
+  jog = sign * Number($("speed").value);
+  $(sign > 0 ? "jog-pos" : "jog-neg").classList.add("held");
+  if (!jogTimer) {
+    send("CMD_VEL", { velocity: jog });
+    jogTimer = setInterval(() => send("CMD_VEL", { velocity: jog }), 40);
+  }
+}
+function stopJog() {
+  if (!jogTimer) return;
+  clearInterval(jogTimer);
+  jogTimer = null;
+  jog = 0;
+  for (let i = 0; i < 3; i++) setTimeout(() => send("CMD_VEL", { velocity: 0 }), i * 40);
+  $("jog-pos").classList.remove("held");
+  $("jog-neg").classList.remove("held");
+}
+const canJog = () => link && last && last.state === P.State.READY;
+
+for (const [id, sign] of [["jog-pos", 1], ["jog-neg", -1]]) {
+  const b = $(id);
+  b.addEventListener("pointerdown", (e) => { b.setPointerCapture(e.pointerId); startJog(sign); });
+  for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) b.addEventListener(ev, stopJog);
+}
+$("jog-stop").onclick = stopJog;
+document.addEventListener("keydown", (e) => {
+  if (e.repeat || e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); startJog(1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); startJog(-1); }
+});
+document.addEventListener("keyup", (e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") stopJog(); });
+window.addEventListener("blur", stopJog);
+document.addEventListener("visibilitychange", () => { if (document.hidden) stopJog(); });
+$("speed").oninput = () => {
+  $("speed-val").textContent = `${Number($("speed").value).toFixed(2)} rad/s`;
+  if (jogTimer) jog = Math.sign(jog) * Number($("speed").value);
+};
+
+// ---------------------------------------------------------------- buttons
+$("btn-connect").onclick = () => connect("serial");
+$("btn-sim").onclick = () => connect("sim");
+$("btn-disconnect").onclick = () => disconnect();
+$("btn-home").onclick = () => send("CMD_HOME");
+$("btn-enable").onclick = () => send("CMD_ENABLE", { enabled: 1 });
+$("btn-release").onclick = () => { stopJog(); send("CMD_ENABLE", { enabled: 0 }); };
+$("btn-slip").onclick = () => { link?.slip?.(5); log("Simulation: ring slipped 5° (step count unaware)"); };
+$("btn-pause").onclick = () => {
+  paused = !paused;
+  pausedAt = performance.now() / 1000;
+  $("btn-pause").textContent = paused ? "Resume" : "Pause";
+  dirty = true;
+};
+$("btn-csv").onclick = () => {
+  if (!recorded.length) { log("Nothing recorded yet"); return; }
+  const flagNames = Object.keys(P.Flags);
+  const rows = ["t_s,angle_rad,angle_deg,velocity_rad_s,state,flags," + flagNames.join(",") + ",cross_error_rad"];
+  for (const r of recorded) {
+    rows.push([r.t.toFixed(3), r.angle.toFixed(5), (r.angle * DEG).toFixed(3), r.velocity.toFixed(4), STATE_NAMES[r.state], r.flags,
+      ...flagNames.map((n) => (r.flags & P.Flags[n] ? 1 : 0)), r.cross_error.toFixed(5)].join(","));
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.join("\n") + "\n"], { type: "text/csv" }));
+  a.download = `ring_status_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+function updateControls() {
+  const live = !!(link && last);
+  $("btn-home").disabled = !live || last.state === P.State.HOMING;
+  $("btn-enable").disabled = !live || !!(last.flags & P.Flags.ENABLED);
+  $("btn-release").disabled = !live;
+  const j = canJog();
+  for (const id of ["jog-pos", "jog-neg", "jog-stop"]) $(id).disabled = !j;
+  if (!j) stopJog();
+}
+
+// ---------------------------------------------------------------- state panel
+const flagsEl = $("flags");
+for (const [name, info] of Object.entries(FLAG_INFO)) {
+  const s = document.createElement("span");
+  s.className = "flag"; s.dataset.flag = name; s.dataset.level = info.level; s.textContent = info.label;
+  flagsEl.append(s);
+}
+function renderStatus() {
+  const s = last;
+  const name = s ? STATE_NAMES[s.state] : null;
+  const st = STATE_STYLE[name] || { icon: "?", color: "var(--text-muted)", hint: link ? "Waiting for the first STATUS frame." : "Connect to the Arduino, or Simulate." };
+  $("state-icon").textContent = st.icon;
+  $("state-icon").style.background = st.color;
+  $("state-text").textContent = name || "No data";
+  $("state-hint").textContent = st.hint;
+  for (const el of flagsEl.children) el.classList.toggle("on", !!(s && s.flags & P.Flags[el.dataset.flag]));
+  const homed = s && s.state === P.State.READY;
+  $("ro-angle").textContent = s ? `${(s.angle * DEG).toFixed(1)}°` : "–";
+  $("ro-angle-rad").textContent = s ? `${s.angle.toFixed(3)} rad${homed ? "" : " · unreferenced"}` : "–";
+  $("ro-vel").textContent = s ? s.velocity.toFixed(2) : "–";
+  $("ro-cross").textContent = s ? `${(s.cross_error * DEG).toFixed(2)}°` : "–";
+  updateControls();
+  renderDial();
+}
+
+// ---------------------------------------------------------------- dial
+const SVGNS = "http://www.w3.org/2000/svg";
+const C = 160, R = 118;
+// Ring angle (rad, CCW positive from above, 0 at the top) to screen coordinates.
+const pt = (a, r = R) => [C - r * Math.sin(a), C - r * Math.cos(a)];
+function arc(a0, a1, r) {
+  const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r);
+  const large = Math.abs(a1 - a0) > Math.PI ? 1 : 0;
+  const sweep = a1 > a0 ? 0 : 1;  // CCW on screen for increasing angle
+  return `M${x0.toFixed(2)},${y0.toFixed(2)} A${r},${r} 0 ${large} ${sweep} ${x1.toFixed(2)},${y1.toFixed(2)}`;
+}
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  (parent || dial).append(e);
+  return e;
+}
+const dial = $("dial");
+const soft = SOFT_LIMIT_DEG / DEG, hard = HARD_LIMIT_DEG / DEG;
+el("circle", { cx: C, cy: C, r: R, fill: "none", stroke: "var(--grid)", "stroke-width": 2 });
+el("path", { d: arc(-soft, soft, R), fill: "none", stroke: "var(--axis)", "stroke-width": 8, "stroke-linecap": "round" });
+el("path", { d: arc(-hard, -soft, R), fill: "none", stroke: "var(--serious)", "stroke-width": 2, "stroke-dasharray": "3 3" });
+el("path", { d: arc(soft, hard, R), fill: "none", stroke: "var(--serious)", "stroke-width": 2, "stroke-dasharray": "3 3" });
+el("path", { d: arc(-hard, 0, R - 16), fill: "none", stroke: "var(--text-muted)", "stroke-width": 3, "stroke-dasharray": "1 5", "stroke-linecap": "round" });
+for (const [a, label] of [[0, "0°"], [Math.PI / 2, "+90°"], [-Math.PI / 2, "−90°"], [soft, "+150°"], [-soft, "−150°"]]) {
+  const [x0, y0] = pt(a, R + 6), [x1, y1] = pt(a, R - 6), [tx, ty] = pt(a, R + 22);
+  el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "var(--text-muted)", "stroke-width": 1.5 });
+  const t = el("text", { x: tx, y: ty + 4, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)" });
+  t.textContent = label;
+}
+for (const a of [hard, -hard]) {
+  const [x0, y0] = pt(a, R + 9), [x1, y1] = pt(a, R - 9);
+  el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "var(--critical)", "stroke-width": 3, "stroke-linecap": "round" });
+}
+{
+  const t = el("text", { x: C, y: C + R + 30, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)" });
+  t.textContent = "hard stops ±170°";
+  const [hx, hy] = pt(-Math.PI / 2, R - 30);
+  const h = el("text", { x: hx - 6, y: hy + 4, "text-anchor": "end", "font-size": 10, fill: "var(--text-secondary)" });
+  h.textContent = "home flag";
+}
+const needleGroup = el("g", { opacity: 0 });
+const needle = el("line", { x1: C, y1: C, x2: C, y2: C - R, stroke: "var(--series-1)", "stroke-width": 3, "stroke-linecap": "round" }, needleGroup);
+const needleHead = el("circle", { cx: C, cy: C - R, r: 7, fill: "var(--series-1)", stroke: "var(--surface)", "stroke-width": 2 }, needleGroup);
+el("circle", { cx: C, cy: C, r: 5, fill: "var(--text-secondary)" });
+const centreText = el("text", { x: C, y: C + 36, "text-anchor": "middle", "font-size": 22, "font-weight": 600, fill: "var(--text-primary)" });
+const centreSub = el("text", { x: C, y: C + 54, "text-anchor": "middle", "font-size": 11, fill: "var(--text-muted)" });
+
+function renderDial() {
+  if (!last) { needleGroup.setAttribute("opacity", 0); centreText.textContent = ""; centreSub.textContent = ""; return; }
+  const a = Math.max(-Math.PI, Math.min(Math.PI, last.angle));
+  const [x, y] = pt(a, R);
+  needle.setAttribute("x2", x); needle.setAttribute("y2", y);
+  needleHead.setAttribute("cx", x); needleHead.setAttribute("cy", y);
+  const homed = last.state === P.State.READY;
+  needle.setAttribute("stroke-dasharray", homed ? "" : "6 5");
+  needleGroup.setAttribute("opacity", 1);
+  centreText.textContent = `${(last.angle * DEG).toFixed(1)}°`;
+  centreSub.textContent = homed ? "from home" : "since power-up (not homed)";
+  dial.setAttribute("aria-label", `Ring angle ${(last.angle * DEG).toFixed(1)} degrees, ${STATE_NAMES[last.state]}`);
+}
+
+// ---------------------------------------------------------------- charts
+const charts = [
+  { canvas: $("chart-angle"), key: "angle", scale: DEG, min: -180, max: 180, ticks: [-150, -90, 0, 90, 150], limits: [-SOFT_LIMIT_DEG, SOFT_LIMIT_DEG], fmt: (v) => `${v.toFixed(1)}°` },
+  { canvas: $("chart-vel"), key: "velocity", scale: 1, min: -3.3, max: 3.3, ticks: [-3, -1.5, 0, 1.5, 3], limits: [-MAX_VEL, MAX_VEL], fmt: (v) => `${v.toFixed(2)} rad/s` },
+];
+const PAD = { l: 44, r: 12, t: 8, b: 22 };
+let hoverX = null, dirty = true;
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function sizeCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [ctx, w, h];
+}
+
+function nearest(tq) {
+  let best = null, bd = Infinity;
+  for (const s of samples) { const d = Math.abs(s.t - tq); if (d < bd) { bd = d; best = s; } }
+  return bd < 0.2 ? best : null;
+}
+
+function drawCharts() {
+  const now = paused ? pausedAt : performance.now() / 1000;
+  const col = { grid: css("--grid"), axis: css("--axis"), muted: css("--text-muted"), series: css("--series-1"), surface: css("--surface"), serious: css("--serious") };
+  let hoverSample = null;
+  for (const ch of charts) {
+    const [ctx, w, h] = sizeCanvas(ch.canvas);
+    const pw = w - PAD.l - PAD.r, ph = h - PAD.t - PAD.b;
+    const X = (t) => PAD.l + ((t - (now - WINDOW_S)) / WINDOW_S) * pw;
+    const Y = (v) => PAD.t + (1 - (v - ch.min) / (ch.max - ch.min)) * ph;
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = "11px system-ui, -apple-system, sans-serif";
+    ctx.textBaseline = "middle";
+    // grid and y ticks
+    for (const v of ch.ticks) {
+      ctx.strokeStyle = v === 0 ? col.axis : col.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(PAD.l, Math.round(Y(v)) + 0.5); ctx.lineTo(w - PAD.r, Math.round(Y(v)) + 0.5); ctx.stroke();
+      ctx.fillStyle = col.muted; ctx.textAlign = "right";
+      ctx.fillText(String(v), PAD.l - 6, Y(v));
+    }
+    // limits
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = col.serious; ctx.lineWidth = 1;
+    for (const v of ch.limits) { ctx.beginPath(); ctx.moveTo(PAD.l, Math.round(Y(v)) + 0.5); ctx.lineTo(w - PAD.r, Math.round(Y(v)) + 0.5); ctx.stroke(); }
+    ctx.setLineDash([]);
+    // x ticks: seconds ago
+    ctx.textAlign = "center"; ctx.fillStyle = col.muted;
+    for (let s = 0; s <= WINDOW_S; s += 5) ctx.fillText(s === 0 ? "now" : `−${s} s`, X(now - s), h - PAD.b + 13);
+    // series (break the line across gaps in the stream)
+    ctx.save();
+    ctx.beginPath(); ctx.rect(PAD.l, PAD.t, pw, ph); ctx.clip();
+    ctx.strokeStyle = col.series; ctx.lineWidth = 2; ctx.lineJoin = "round";
+    ctx.beginPath();
+    let prev = null;
+    for (const s of samples) {
+      if (s.t < now - WINDOW_S - 0.1 || s.t > now) continue;
+      const x = X(s.t), y = Y(s[ch.key] * ch.scale);
+      // A gap in the stream, or homing re-zeroing the angle, starts a new segment.
+      const rezeroed = s.state === P.State.READY && prev && prev.state !== P.State.READY;
+      if (!prev || s.t - prev.t > 0.25 || rezeroed) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      prev = s;
+    }
+    ctx.stroke();
+    ctx.restore();
+    // crosshair
+    if (hoverX !== null && hoverX >= PAD.l && hoverX <= w - PAD.r) {
+      const tq = now - WINDOW_S + ((hoverX - PAD.l) / pw) * WINDOW_S;
+      const s = nearest(tq);
+      ctx.strokeStyle = col.axis; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(Math.round(hoverX) + 0.5, PAD.t); ctx.lineTo(Math.round(hoverX) + 0.5, PAD.t + ph); ctx.stroke();
+      if (s) {
+        hoverSample = s;
+        ctx.fillStyle = col.series; ctx.strokeStyle = col.surface; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(X(s.t), Y(s[ch.key] * ch.scale), 4.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      }
+    }
+  }
+  const tip = $("tooltip");
+  if (hoverSample) {
+    const flags = Object.keys(P.Flags).filter((n) => hoverSample.flags & P.Flags[n] && n !== "ENABLED").map((n) => FLAG_INFO[n].label);
+    tip.innerHTML = `<b>${(now - hoverSample.t).toFixed(2)} s ago</b><br>Angle ${charts[0].fmt(hoverSample.angle * DEG)}<br>Velocity ${charts[1].fmt(hoverSample.velocity)}<br>${STATE_NAMES[hoverSample.state]}${flags.length ? " · " + flags.join(", ") : ""}`;
+    tip.style.display = "block";
+    const box = $("charts").getBoundingClientRect();
+    const left = hoverX + 14 + tip.offsetWidth > box.width ? hoverX - tip.offsetWidth - 14 : hoverX + 14;
+    tip.style.left = `${Math.max(0, left)}px`;
+    tip.style.top = `${charts[0].canvas.offsetTop + 8}px`;
+  } else tip.style.display = "none";
+}
+for (const ch of charts) {
+  ch.canvas.addEventListener("pointermove", (e) => { hoverX = e.clientX - ch.canvas.getBoundingClientRect().left; dirty = true; });
+  ch.canvas.addEventListener("pointerleave", () => { hoverX = null; dirty = true; });
+}
+window.addEventListener("resize", () => (dirty = true));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => (dirty = true));
+
+// ---------------------------------------------------------------- frame loop
+let lastUi = 0;
+function frame(ts) {
+  const t = ts / 1000;
+  if (link && t - lastUi > 0.25) {
+    lastUi = t;
+    statusTimes = statusTimes.filter((x) => x > t - 1);
+    $("rate").textContent = statusTimes.length;
+    if (last) {
+      const age = t - samples[samples.length - 1].t;
+      setLink(age > 0.5 ? "stale" : "live");
+    }
+  }
+  if (dirty || (!paused && link)) { renderStatus(); drawCharts(); dirty = false; }
+  requestAnimationFrame(frame);
+}
+
+if (!("serial" in navigator)) $("no-serial").hidden = false;
+setLink("off");
+renderStatus();
+log("Ready. Connect serial (Chrome / Edge) or Simulate.");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
