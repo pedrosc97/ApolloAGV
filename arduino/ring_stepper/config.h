@@ -50,7 +50,6 @@
 #define STEP_LOSS_THRESH_RAD 0.052f  // 3 deg: centre-crossing error that raises the step-loss flag
 
 // ---- Link -----------------------------------------------------------------
-#define SERIAL_BAUD 115200
-#define WATCHDOG_MS 250              // no velocity command for this long -> ramp to zero
-#define STATUS_PERIOD_MS 20          // 50 Hz status frames
+// SERIAL_BAUD, WATCHDOG_MS and STATUS_PERIOD_MS are shared with the Pi, so they live in
+// comms/protocol.yaml and arrive as ring:: constants through the generated ring_protocol.h.
 #define CONTROL_PERIOD_US 1000       // 1 kHz ramp / limit / homing update

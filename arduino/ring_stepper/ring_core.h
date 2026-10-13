@@ -2,9 +2,9 @@
 // limits, homing, watchdog and status reporting.
 //
 // Nothing in here touches hardware. It talks to the board through the hal_*
-// functions declared below, which ring_stepper.ino implements for the Arduino
-// and test/sim_main.cpp implements for the desktop simulator. That is what
-// lets the same logic be tested without a board.
+// functions declared below, which ring_stepper.ino implements for the Arduino.
+// A desktop harness can implement them too, which is what lets the same logic
+// be tested without a board.
 #pragma once
 #include <math.h>
 #include <stdint.h>

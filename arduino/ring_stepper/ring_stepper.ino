@@ -199,7 +199,7 @@ void setup() {
   writeDir(true);
   pinMode(PIN_HOME, INPUT_PULLUP);
 
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(ring::SERIAL_BAUD);
   timerBegin();
   controller.begin();
 }
